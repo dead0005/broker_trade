@@ -1,0 +1,15 @@
+# Ignore node_modules, system files
+node_modules/
+.DS_Store
+Thumbs.db
+*.log
+
+# Vite / React build artifacts
+dist
+/dist-ssr
+*.local
+
+# IDE files
+.vscode/*
+!.vscode/extensions.json
+.idea
