@@ -16,9 +16,4 @@ A React-powered trading dashboard built with Vite.
 - Holdings, positions, and orders tables
 - Line chart visualization
 
-## Run locally
 
-```bash
-npm install
-npm run dev
-```
