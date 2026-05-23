@@ -64,6 +64,8 @@ function App() {
   const [loggedIn, setLoggedIn] = useState(false)
   const [selectedSection, setSelectedSection] = useState('holdings')
   const [stocks, setStocks] = useState(stockData)
+  const [selectedStock, setSelectedStock] = useState(stockData[0].symbol)
+  const [stockHistory, setStockHistory] = useState([])
   const [liveError, setLiveError] = useState('')
   const [isFetching, setIsFetching] = useState(false)
 
@@ -99,6 +101,33 @@ function App() {
       chg: live ? live.change : item.chg,
     }
   })
+
+  const fetchStockHistory = async (symbol) => {
+    const apiSymbol = apiSymbolMap[symbol]
+    if (!apiSymbol) {
+      throw new Error(`Unsupported symbol: ${symbol}`)
+    }
+
+    const url = `https://www.alphavantage.co/query?function=TIME_SERIES_INTRADAY&symbol=${apiSymbol}&interval=15min&outputsize=compact&apikey=${apiKey}`
+    const response = await fetch(url)
+    const data = await response.json()
+
+    if (data.Note) {
+      throw new Error('Alpha Vantage rate limit reached. Please wait a minute.')
+    }
+
+    const series = data['Time Series (15min)'] || data['Time Series (5min)'] || {}
+    const entries = Object.entries(series)
+      .map(([time, values]) => ({ time, price: parseFloat(values['4. close']) }))
+      .filter((item) => !Number.isNaN(item.price))
+      .sort((a, b) => a.time.localeCompare(b.time))
+
+    if (entries.length === 0) {
+      throw new Error('No intraday history available for ' + symbol)
+    }
+
+    setStockHistory(entries.slice(-20))
+  }
 
   const fetchQuote = async (symbol) => {
     const apiSymbol = apiSymbolMap[symbol]
@@ -164,8 +193,35 @@ function App() {
     return () => clearInterval(intervalId)
   }, [loggedIn])
 
-  const chartData = useMemo(
-    () => ({
+  useEffect(() => {
+    if (!loggedIn || !selectedStock) return
+
+    setLiveError('')
+    fetchStockHistory(selectedStock).catch((error) => {
+      setLiveError(error.message || 'Unable to load stock history')
+      setStockHistory([])
+    })
+  }, [loggedIn, selectedStock])
+
+  const chartData = useMemo(() => {
+    if (selectedStock && stockHistory.length > 0) {
+      return {
+        labels: stockHistory.map((point) => point.time.slice(11)),
+        datasets: [
+          {
+            label: `${selectedStock} Price`,
+            data: stockHistory.map((point) => point.price),
+            borderColor: '#ff7a45',
+            backgroundColor: '#ff7a45',
+            tension: 0.3,
+            pointRadius: 4,
+            pointHoverRadius: 6,
+          },
+        ],
+      }
+    }
+
+    return {
       labels: stocks.map((stock) => stock.symbol),
       datasets: [
         {
@@ -178,23 +234,25 @@ function App() {
           pointHoverRadius: 6,
         },
       ],
-    }),
-    [stocks],
-  )
+    }
+  }, [stocks, selectedStock, stockHistory])
 
   const chartOptions = useMemo(
     () => ({
       responsive: true,
       plugins: {
         legend: { display: false },
-        title: { display: true, text: 'Market Watch Prices' },
+        title: {
+          display: true,
+          text: selectedStock && stockHistory.length > 0 ? `${selectedStock} Price History` : 'Market Watch Prices',
+        },
       },
       scales: {
         x: { ticks: { color: '#cbd5e1' }, grid: { color: 'rgba(203,213,225,0.08)' } },
         y: { ticks: { color: '#cbd5e1' }, grid: { color: 'rgba(203,213,225,0.08)' } },
       },
     }),
-    [],
+    [selectedStock, stockHistory],
   )
 
   function login() {
@@ -238,7 +296,11 @@ function App() {
               <div className="watch-header">Market Watch</div>
               <div className="watch-list">
                 {stocks.map((stock) => (
-                  <div key={stock.symbol} className="stock-item">
+                  <div
+                    key={stock.symbol}
+                    className={`stock-item ${selectedStock === stock.symbol ? 'active' : ''}`}
+                    onClick={() => setSelectedStock(stock.symbol)}
+                  >
                     <div>
                       <div className="stock-name">{stock.symbol}</div>
                       <div className="stock-symbol">{stock.name}</div>
