@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import './App.css'
 import { Line } from 'react-chartjs-2'
 import {
@@ -13,6 +13,15 @@ import {
 } from 'chart.js'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend)
+
+const apiSymbolMap = {
+  RELIANCE: 'RELIANCE.BSE',
+  TCS: 'TCS.BSE',
+  INFY: 'INFY.BSE',
+  SBIN: 'SBIN.BSE',
+  HDFCBANK: 'HDFCBANK.BSE',
+  ICICIBANK: 'ICICIBANK.BSE',
+}
 
 const stockData = [
   { symbol: 'RELIANCE', name: 'Reliance Industries', price: 2456.8, change: 1.25 },
@@ -54,17 +63,114 @@ function App() {
   const [password, setPassword] = useState('')
   const [loggedIn, setLoggedIn] = useState(false)
   const [selectedSection, setSelectedSection] = useState('holdings')
+  const [stocks, setStocks] = useState(stockData)
+  const [liveError, setLiveError] = useState('')
+  const [isFetching, setIsFetching] = useState(false)
 
-  const totalValue = holdingsData.reduce((sum, item) => sum + item.val, 0)
-  const totalPnl = holdingsData.reduce((sum, item) => sum + item.pnl, 0)
+  const apiKey = import.meta.env.VITE_ALPHA_VANTAGE_KEY?.trim()
+  const refreshInterval = 60000
+
+  const totalValue = stocks.reduce((sum, item) => {
+    const holding = holdingsData.find((holdingItem) => holdingItem.symbol === item.symbol)
+    const qty = holding ? holding.qty : 0
+    return sum + item.price * qty
+  }, 0)
+
+  const totalPnl = stocks.reduce((sum, item) => {
+    const holding = holdingsData.find((holdingItem) => holdingItem.symbol === item.symbol)
+    if (!holding) return sum
+    return sum + (item.price - holding.avg) * holding.qty
+  }, 0)
+
+  const latestHoldingsData = holdingsData.map((item) => {
+    const live = stocks.find((stock) => stock.symbol === item.symbol)
+    const price = live ? live.price : item.ltp
+    const change = live ? live.change : item.chg
+    const value = Math.round(price * item.qty)
+    const pnl = Math.round((price - item.avg) * item.qty)
+    return { ...item, ltp: price, chg: change, val: value, pnl }
+  })
+
+  const latestPositionsData = positionsData.map((item) => {
+    const live = stocks.find((stock) => stock.symbol === item.symbol)
+    return {
+      ...item,
+      ltp: live ? live.price : item.ltp,
+      chg: live ? live.change : item.chg,
+    }
+  })
+
+  const fetchQuote = async (symbol) => {
+    const apiSymbol = apiSymbolMap[symbol]
+    if (!apiSymbol) {
+      throw new Error(`Unsupported symbol: ${symbol}`)
+    }
+
+    const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${apiSymbol}&apikey=${apiKey}`
+    const response = await fetch(url)
+    const data = await response.json()
+
+    if (data.Note) {
+      throw new Error('Alpha Vantage rate limit reached. Please wait a minute.')
+    }
+
+    const quote = data['Global Quote'] || {}
+    const price = parseFloat(quote['05. price'])
+    const rawChange = quote['10. change percent'] ?? ''
+    const change = parseFloat(rawChange.replace('%', ''))
+
+    if (Number.isNaN(price)) {
+      throw new Error('Live quote unavailable for ' + symbol)
+    }
+
+    return { symbol, price, change: Number.isNaN(change) ? 0 : change }
+  }
+
+  const fetchMarketQuotes = async () => {
+    if (!apiKey) {
+      setLiveError('Add a free Alpha Vantage API key to .env: VITE_ALPHA_VANTAGE_KEY=your_key')
+      return
+    }
+
+    setIsFetching(true)
+    setLiveError('')
+
+    try {
+      const results = await Promise.all(
+        stockData.map((item) => fetchQuote(item.symbol).catch((error) => ({ symbol: item.symbol, error }))),
+      )
+
+      const nextStocks = stockData.map((item) => {
+        const updated = results.find((result) => result.symbol === item.symbol)
+        if (updated && !updated.error) {
+          return { ...item, price: updated.price, change: updated.change }
+        }
+        return item
+      })
+
+      setStocks(nextStocks)
+    } catch (error) {
+      setLiveError(error.message || 'Unable to fetch live market data')
+    } finally {
+      setIsFetching(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!loggedIn) return
+
+    fetchMarketQuotes()
+    const intervalId = setInterval(fetchMarketQuotes, refreshInterval)
+    return () => clearInterval(intervalId)
+  }, [loggedIn])
 
   const chartData = useMemo(
     () => ({
-      labels: stockData.map((stock) => stock.symbol),
+      labels: stocks.map((stock) => stock.symbol),
       datasets: [
         {
           label: 'LTP',
-          data: stockData.map((stock) => stock.price),
+          data: stocks.map((stock) => stock.price),
           borderColor: '#ff7a45',
           backgroundColor: '#ff7a45',
           tension: 0.3,
@@ -73,7 +179,7 @@ function App() {
         },
       ],
     }),
-    [],
+    [stocks],
   )
 
   const chartOptions = useMemo(
@@ -131,7 +237,7 @@ function App() {
               </div>
               <div className="watch-header">Market Watch</div>
               <div className="watch-list">
-                {stockData.map((stock) => (
+                {stocks.map((stock) => (
                   <div key={stock.symbol} className="stock-item">
                     <div>
                       <div className="stock-name">{stock.symbol}</div>
@@ -170,12 +276,12 @@ function App() {
               <div className="summary-cards">
                 <div className="card summary-card">
                   <span>Total value</span>
-                  <strong>₹{totalValue.toLocaleString()}</strong>
+                  <strong>₹{Math.round(totalValue).toLocaleString()}</strong>
                 </div>
                 <div className="card summary-card">
                   <span>Total P&L</span>
                   <strong className={totalPnl >= 0 ? 'positive' : 'negative'}>
-                    ₹{totalPnl.toLocaleString()}
+                    ₹{Math.round(totalPnl).toLocaleString()}
                   </strong>
                 </div>
                 <div className="card summary-card">
@@ -185,6 +291,10 @@ function App() {
               </div>
 
               <div className="chart-card">
+                {liveError ? (
+                  <div className="live-alert">{liveError}</div>
+                ) : null}
+                {isFetching ? <div className="live-alert">Refreshing live quotes...</div> : null}
                 <Line data={chartData} options={chartOptions} />
               </div>
 
@@ -203,7 +313,7 @@ function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {holdingsData.map((item) => (
+                      {latestHoldingsData.map((item) => (
                         <tr key={item.symbol}>
                           <td>{item.symbol}</td>
                           <td>{item.qty}</td>
@@ -234,7 +344,7 @@ function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {positionsData.map((item) => (
+                      {latestPositionsData.map((item) => (
                         <tr key={`${item.symbol}-${item.type}`}>
                           <td>{item.symbol}</td>
                           <td>
